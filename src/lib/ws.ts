@@ -1,132 +1,151 @@
-/**
- * WebSocket client shell for Nandi real-time updates.
- *
- * Connects with the agent's auth token, auto-reconnects with exponential
- * back-off, and dispatches events to registered handlers.
- */
+import { getToken } from './auth';
+import { API_URL } from './api';
 
-type WSEventType =
+export type WSEventName =
   | 'new_message'
+  | 'conversation_created'
   | 'conversation_updated'
-  | 'agent_status_changed'
-  | 'call_started'
-  | 'call_ended';
+  | 'agent_presence'
+  | 'campaign_updated';
 
-interface WSEvent {
-  type: WSEventType;
-  data: unknown;
-  timestamp: string;
+export interface WSEvent {
+  event: WSEventName | string;
+  tenant_id: string;
+  conversation_id?: string;
+  message_id?: string;
+  payload?: unknown;
 }
 
-type WSHandler = (event: WSEvent) => void;
+export type WSConnectionState = 'idle' | 'connecting' | 'connected' | 'reconnecting' | 'disconnected';
 
-const WS_URL = process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8080/ws';
+type WSHandler = (event: WSEvent) => void;
+type StateHandler = (state: WSConnectionState) => void;
+
+function deriveWsUrl(): string {
+  if (process.env.NEXT_PUBLIC_WS_URL) {
+    return process.env.NEXT_PUBLIC_WS_URL.replace(/\/$/, '');
+  }
+  return `${API_URL.replace(/^http/, 'ws')}/ws`;
+}
+
+const WS_URL = deriveWsUrl();
 
 class WebSocketClient {
   private ws: WebSocket | null = null;
-  private url: string;
   private handlers = new Map<string, Set<WSHandler>>();
+  private stateHandlers = new Set<StateHandler>();
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 10;
+  private maxReconnectAttempts = 12;
   private reconnectDelay = 1000;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private subscriptions = new Set<string>();
+  private shouldReconnect = false;
+  private state: WSConnectionState = 'idle';
 
-  constructor(url: string) {
-    this.url = url;
+  get connectionState(): WSConnectionState {
+    return this.state;
   }
 
-  /** Open the WebSocket connection (call after login). */
-  connect(token: string): void {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+  private setState(next: WSConnectionState) {
+    this.state = next;
+    this.stateHandlers.forEach((handler) => handler(next));
+  }
 
-    this.ws = new WebSocket(`${this.url}?token=${token}`);
+  onState(handler: StateHandler): () => void {
+    this.stateHandlers.add(handler);
+    handler(this.state);
+    return () => {
+      this.stateHandlers.delete(handler);
+    };
+  }
+
+  connect(token?: string): void {
+    if (typeof window === 'undefined') return;
+    const access = token || getToken();
+    if (!access) return;
+
+    this.shouldReconnect = true;
+
+    if (this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING) {
+      return;
+    }
+
+    this.setState(this.reconnectAttempts > 0 ? 'reconnecting' : 'connecting');
+
+    try {
+      this.ws = new WebSocket(`${WS_URL}?access_token=${encodeURIComponent(access)}`);
+    } catch {
+      this.scheduleReconnect();
+      return;
+    }
 
     this.ws.onopen = () => {
-      console.log('[WS] Connected');
       this.reconnectAttempts = 0;
-      this.resubscribeAll();
+      this.setState('connected');
     };
 
     this.ws.onmessage = (event) => {
       try {
-        const data: WSEvent = JSON.parse(event.data);
+        const data = JSON.parse(event.data) as WSEvent;
+        if (!data || typeof data.event !== 'string') return;
         this.dispatch(data);
-      } catch (err) {
-        console.error('[WS] Failed to parse message:', err);
+      } catch {
+        // ignore non-JSON frames
       }
     };
 
     this.ws.onclose = () => {
-      console.log('[WS] Disconnected');
-      this.scheduleReconnect(token);
+      this.ws = null;
+      if (this.shouldReconnect) {
+        this.setState('reconnecting');
+        this.scheduleReconnect();
+      } else {
+        this.setState('disconnected');
+      }
     };
 
-    this.ws.onerror = (err) => {
-      console.error('[WS] Error:', err);
+    this.ws.onerror = () => {
+      this.ws?.close();
     };
   }
 
-  /** Gracefully close the connection (e.g. on logout). */
   disconnect(): void {
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectAttempts = this.maxReconnectAttempts; // prevent reconnect
+    this.shouldReconnect = false;
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempts = 0;
     this.ws?.close();
     this.ws = null;
+    this.setState('disconnected');
   }
 
-  private scheduleReconnect(token: string): void {
-    if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
-
-    const delay = this.reconnectDelay * Math.pow(2, this.reconnectAttempts);
-    this.reconnectAttempts++;
-
-    console.log(`[WS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
-    this.reconnectTimer = setTimeout(() => this.connect(token), delay);
+  private scheduleReconnect(): void {
+    if (!this.shouldReconnect) return;
+    if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+      this.setState('disconnected');
+      return;
+    }
+    const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts), 30000);
+    this.reconnectAttempts += 1;
+    this.reconnectTimer = setTimeout(() => this.connect(), delay);
   }
 
   private dispatch(event: WSEvent): void {
-    const typeHandlers = this.handlers.get(event.type);
-    typeHandlers?.forEach((h) => h(event));
-
-    const allHandlers = this.handlers.get('*');
-    allHandlers?.forEach((h) => h(event));
+    this.handlers.get(event.event)?.forEach((handler) => handler(event));
+    this.handlers.get('*')?.forEach((handler) => handler(event));
   }
-
-  private resubscribeAll(): void {
-    this.subscriptions.forEach((channel) => {
-      this.ws?.send(JSON.stringify({ type: 'subscribe', channel }));
-    });
-  }
-
-  // ── Public API ──────────────────────────────────────────────────────────
 
   on(eventType: string, handler: WSHandler): () => void {
     if (!this.handlers.has(eventType)) {
       this.handlers.set(eventType, new Set());
     }
     this.handlers.get(eventType)!.add(handler);
-
-    // Return unsubscribe function
     return () => {
       this.handlers.get(eventType)?.delete(handler);
     };
   }
-
-  subscribe(channel: string): void {
-    this.subscriptions.add(channel);
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'subscribe', channel }));
-    }
-  }
-
-  unsubscribe(channel: string): void {
-    this.subscriptions.delete(channel);
-    if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(JSON.stringify({ type: 'unsubscribe', channel }));
-    }
-  }
 }
 
-export const wsClient = new WebSocketClient(WS_URL);
-export type { WSEvent, WSEventType, WSHandler };
+export const wsClient = new WebSocketClient();
+export type { WSHandler };

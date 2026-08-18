@@ -1,75 +1,61 @@
-import type { User, AuthTokens } from './types';
+import type { AuthData } from './types';
 
 const ACCESS_TOKEN_KEY = 'token';
 const REFRESH_TOKEN_KEY = 'refresh_token';
 
+const REFRESH_MAX_AGE = 60 * 60 * 24 * 7;
+
 let accessToken: string | null = null;
 let refreshToken: string | null = null;
 
-/**
- * Persist tokens in memory + httpOnly-ish cookies.
- * In a production setup the backend would set httpOnly cookies directly.
- */
-export function setTokens(tokens: AuthTokens): void {
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function writeCookie(name: string, value: string, maxAge: number): void {
   if (typeof document === 'undefined') return;
+  document.cookie = `${name}=${encodeURIComponent(value)}; path=/; max-age=${maxAge}; SameSite=Lax`;
+}
+
+function clearCookie(name: string): void {
+  if (typeof document === 'undefined') return;
+  document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+}
+
+export function setTokens(tokens: Pick<AuthData, 'access_token' | 'refresh_token' | 'expires_in'>): void {
   accessToken = tokens.access_token;
   refreshToken = tokens.refresh_token;
-
-  document.cookie = `${ACCESS_TOKEN_KEY}=${tokens.access_token}; path=/; max-age=${tokens.expires_in}`;
-  document.cookie = `${REFRESH_TOKEN_KEY}=${tokens.refresh_token}; path=/; max-age=${tokens.expires_in * 2}`;
+  const accessMax = Math.max(tokens.expires_in || 900, 60);
+  writeCookie(ACCESS_TOKEN_KEY, tokens.access_token, accessMax);
+  writeCookie(REFRESH_TOKEN_KEY, tokens.refresh_token, REFRESH_MAX_AGE);
 }
 
-/** Read the access token from memory (preferred) or cookie fallback. */
 export function getToken(): string | null {
   if (accessToken) return accessToken;
-  if (typeof document === 'undefined') return null;
-
-  const match = document.cookie.match(
-    new RegExp(`(?:^|;\s*)${ACCESS_TOKEN_KEY}=([^;]*)`)
-  );
-  return match ? match[1] : null;
+  accessToken = readCookie(ACCESS_TOKEN_KEY);
+  return accessToken;
 }
 
-/** Read the refresh token from memory or cookie. */
 export function getRefreshToken(): string | null {
   if (refreshToken) return refreshToken;
-  if (typeof document === 'undefined') return null;
-
-  const match = document.cookie.match(
-    new RegExp(`(?:^|;\s*)${REFRESH_TOKEN_KEY}=([^;]*)`)
-  );
-  return match ? match[1] : null;
+  refreshToken = readCookie(REFRESH_TOKEN_KEY);
+  return refreshToken;
 }
 
-/** Clear all tokens from memory and cookies. */
 export function clearTokens(): void {
   accessToken = null;
   refreshToken = null;
-  if (typeof document === 'undefined') return;
-  document.cookie = `${ACCESS_TOKEN_KEY}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
-  document.cookie = `${REFRESH_TOKEN_KEY}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+  clearCookie(ACCESS_TOKEN_KEY);
+  clearCookie(REFRESH_TOKEN_KEY);
 }
 
-/** Decode the JWT payload to extract user info (no verification — backend enforces). */
-export function getUserFromToken(): User | null {
-  const token = getToken();
-  if (!token) return null;
-
-  try {
-    const payload = JSON.parse(atob(token.split('.')[1]));
-    return {
-      id: payload.sub || payload.user_id || '',
-      email: payload.email || '',
-      first_name: payload.first_name || '',
-      last_name: payload.last_name || '',
-      full_name: payload.full_name || `${payload.first_name} ${payload.last_name}`,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Quick check whether a token exists (does NOT validate expiry). */
 export function isAuthenticated(): boolean {
-  return !!getToken();
+  return !!(getToken() || getRefreshToken());
+}
+
+export function hydrateTokensFromCookies(): void {
+  accessToken = readCookie(ACCESS_TOKEN_KEY);
+  refreshToken = readCookie(REFRESH_TOKEN_KEY);
 }

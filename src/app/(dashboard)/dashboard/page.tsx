@@ -1,144 +1,190 @@
-"use client";
+'use client';
 
-import { PhoneCall, MessageSquare, Clock, ArrowUpRight, ArrowDownRight, Users, PlayCircle } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { MessageSquare, Inbox, CheckCircle2, Clock3, Users } from 'lucide-react';
+import { nandi } from '@/lib/nandi';
+import { useAgents } from '@/hooks/useAgents';
+import { ErrorBanner } from '@/components/ErrorBanner';
+import { StatusBadge, ChannelBadge } from '@/components/StatusBadge';
+import { contactName, errorMessage, formatNumber, timeAgo } from '@/lib/utils';
+import type { AnalyticsOverview, Conversation } from '@/lib/types';
 
 export default function DashboardPage() {
-  const stats = [
-    { name: 'Calls Today', value: '142', change: '+12%', isPositive: true, icon: PhoneCall, color: 'text-channelVoice', bg: 'bg-channelVoiceSoft' },
-    { name: 'Open Conversations', value: '28', change: '-5%', isPositive: false, icon: MessageSquare, color: 'text-channelSMS', bg: 'bg-channelSMSSoft' },
-    { name: 'Avg. Response Time', value: '1m 24s', change: '+18%', isPositive: true, icon: Clock, color: 'text-channelWhatsApp', bg: 'bg-channelWhatsAppSoft' },
-    { name: 'Active Agents', value: '12/15', change: '0%', isPositive: true, icon: Users, color: 'text-channelTelegram', bg: 'bg-channelTelegramSoft' },
-  ];
+  const [overview, setOverview] = useState<AnalyticsOverview | null>(null);
+  const [recent, setRecent] = useState<Conversation[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const { agents } = useAgents();
 
-  const recentCalls = [
-    { id: 1, contact: 'Sarah Jenkins', number: '+1 (555) 019-2834', time: '2 mins ago', duration: '4m 12s', status: 'completed' },
-    { id: 2, contact: 'Michael Chen', number: '+1 (555) 012-9931', time: '15 mins ago', duration: '12m 05s', status: 'completed' },
-    { id: 3, contact: 'Unknown Caller', number: '+1 (555) 088-1123', time: '1 hour ago', duration: '0m 45s', status: 'missed' },
-    { id: 4, contact: 'Emma Watson', number: '+1 (555) 099-8877', time: '2 hours ago', duration: '8m 30s', status: 'completed' },
-  ];
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const [metrics, inbox] = await Promise.all([
+        nandi.analytics.overview(),
+        nandi.conversations.list({ page: 1, per_page: 8 }),
+      ]);
+      setOverview(metrics);
+      setRecent(inbox.data);
+    } catch (err) {
+      setError(errorMessage(err, 'Failed to load dashboard'));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    void load();
+  }, []);
+
+  const byStatus = overview?.conversations_by_status || {};
+  const byChannel = overview?.conversations_by_channel || {};
+  const open = Number(byStatus.open || 0);
+  const pending = Number(byStatus.pending || 0);
+  const resolved = Number(byStatus.resolved || 0);
+  const closed = Number(byStatus.closed || 0);
 
   return (
     <div className="space-y-6 max-w-7xl mx-auto">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 className="text-2xl font-bold text-textMain tracking-tight">Overview</h2>
-          <p className="text-textMuted text-sm">Welcome back, John! Here's what's happening today.</p>
-        </div>
-        <div className="flex items-center gap-3">
-          <button className="px-4 py-2 bg-surface border border-border rounded-full text-sm font-medium hover:bg-soft shadow-sm transition-all">
-            Export Report
-          </button>
-          <button className="px-4 py-2 bg-accent text-white rounded-full text-sm font-medium shadow-lift hover:shadow-float hover:-translate-y-0.5 transition-all duration-200 flex items-center gap-2">
-            <PhoneCall size={16} />
-            Make a Call
-          </button>
-        </div>
+      <div>
+        <h2 className="text-2xl font-bold text-textMain tracking-tight">Operations</h2>
+        <p className="text-textMuted text-sm mt-1">Live workspace metrics from your Nandi backend.</p>
       </div>
-      
-      {/* Stats Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((stat) => {
-          const Icon = stat.icon;
-          return (
-            <div key={stat.name} className="p-6 bg-surface border border-border rounded-xl shadow-sm hover:shadow-md transition-shadow relative overflow-hidden group">
-              <div className="flex justify-between items-start mb-4">
-                <div className={`p-3 rounded-lg ${stat.bg} ${stat.color} group-hover:scale-110 transition-transform`}>
-                  <Icon size={24} />
-                </div>
-                <div className={`flex items-center gap-1 text-xs font-semibold px-2 py-1 rounded-full ${stat.isPositive ? 'bg-liveSoft text-live' : 'bg-muted/20 text-textMuted'}`}>
-                  {stat.isPositive ? <ArrowUpRight size={14} /> : <ArrowDownRight size={14} />}
-                  {stat.change}
-                </div>
-              </div>
-              <h3 className="text-textMuted font-medium text-sm mb-1">{stat.name}</h3>
-              <p className="text-3xl font-bold text-textMain tracking-tight">{stat.value}</p>
-            </div>
-          );
-        })}
-      </div>
-      
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mt-6">
-        {/* Recent Activity */}
-        <div className="lg:col-span-2 p-6 bg-surface border border-border rounded-xl shadow-sm">
-          <div className="flex items-center justify-between mb-6">
-            <h3 className="text-lg font-bold text-textMain">Recent Calls</h3>
-            <button className="text-sm text-brand font-medium hover:underline">View all</button>
-          </div>
-          
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm text-left">
-              <thead className="text-xs text-textMuted uppercase bg-background rounded-lg">
-                <tr>
-                  <th className="px-4 py-3 font-semibold rounded-l-lg">Contact</th>
-                  <th className="px-4 py-3 font-semibold">Number</th>
-                  <th className="px-4 py-3 font-semibold">Duration</th>
-                  <th className="px-4 py-3 font-semibold">Time</th>
-                  <th className="px-4 py-3 font-semibold text-right rounded-r-lg">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {recentCalls.map((call) => (
-                  <tr key={call.id} className="border-b border-border last:border-0 hover:bg-background/50 transition-colors">
-                    <td className="px-4 py-4">
-                      <div className="flex items-center gap-3">
-                        <div className="w-8 h-8 rounded-full bg-brandSoft text-brand flex items-center justify-center font-bold text-xs">
-                          {call.contact.charAt(0)}
-                        </div>
-                        <div>
-                          <p className="font-medium text-textMain">{call.contact}</p>
-                          <p className="text-xs text-textMuted capitalize">{call.status}</p>
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-4 py-4 text-textMuted font-mono text-xs">{call.number}</td>
-                    <td className="px-4 py-4 text-textMain font-medium">{call.duration}</td>
-                    <td className="px-4 py-4 text-textMuted">{call.time}</td>
-                    <td className="px-4 py-4 text-right">
-                      <button className="p-2 text-brand hover:bg-brand/10 rounded-full transition-colors" title="Play Recording">
-                        <PlayCircle size={18} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
 
-        {/* Quick Actions / Team */}
-        <div className="p-6 bg-surface border border-border rounded-xl shadow-sm flex flex-col">
-          <h3 className="text-lg font-bold text-textMain mb-6">Team Status</h3>
-          <div className="space-y-5 flex-1">
-            {[
-              { name: 'John Doe', status: 'Available', color: 'bg-live' },
-              { name: 'Sarah Jenkins', status: 'On Call', color: 'bg-accent' },
-              { name: 'Michael Chen', status: 'Offline', color: 'bg-textFaint' },
-              { name: 'Emma Watson', status: 'Wrap-up', color: 'bg-accentSoft' },
-            ].map((agent, i) => (
-              <div key={i} className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <div className="relative">
-                    <div className="w-10 h-10 rounded-full bg-border flex items-center justify-center text-textMuted font-bold text-sm">
-                      {agent.name.split(' ').map(n => n[0]).join('')}
-                    </div>
-                    <span className={`absolute bottom-0 right-0 w-3 h-3 border-2 border-surface rounded-full ${agent.color}`}></span>
-                  </div>
-                  <div>
-                    <p className="font-medium text-textMain text-sm">{agent.name}</p>
-                    <p className="text-xs text-textMuted">{agent.status}</p>
-                  </div>
-                </div>
-                <button className="text-xs font-medium text-brand hover:bg-brand/10 px-3 py-1.5 rounded-full transition-colors">
-                  Message
-                </button>
-              </div>
-            ))}
+      {error ? <ErrorBanner message={error} onRetry={() => void load()} /> : null}
+
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+        <StatCard
+          label="Open conversations"
+          value={loading ? '—' : formatNumber(open)}
+          icon={Inbox}
+        />
+        <StatCard
+          label="Pending"
+          value={loading ? '—' : formatNumber(pending)}
+          icon={Clock3}
+        />
+        <StatCard
+          label="Resolved"
+          value={loading ? '—' : formatNumber(resolved + closed)}
+          icon={CheckCircle2}
+        />
+        <StatCard
+          label="Messages (7 days)"
+          value={loading ? '—' : formatNumber(overview?.messages_last_7_days)}
+          icon={MessageSquare}
+        />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <section className="lg:col-span-2 bg-surface border border-border rounded-xl">
+          <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+            <h3 className="font-semibold text-textMain">Recent conversations</h3>
+            <Link href="/inbox" className="text-sm text-brand font-medium hover:underline">
+              Open inbox
+            </Link>
           </div>
-          <button className="w-full mt-6 py-2 border border-border rounded-full text-sm font-medium hover:bg-soft transition-colors">
-            Manage Team
-          </button>
+          {loading ? (
+            <div className="p-5 space-y-3">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="h-12 rounded-lg bg-soft animate-pulse" />
+              ))}
+            </div>
+          ) : recent.length === 0 ? (
+            <p className="p-8 text-sm text-textMuted">No conversations yet.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {recent.map((conv) => (
+                <li key={conv.id}>
+                  <Link
+                    href={`/inbox?id=${conv.id}`}
+                    className="flex items-center gap-3 px-5 py-3.5 hover:bg-soft"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="font-medium text-sm text-textMain truncate">
+                          {contactName(conv.contact)}
+                        </p>
+                        <ChannelBadge channel={conv.channel} />
+                        <StatusBadge status={conv.status} />
+                      </div>
+                      <p className="text-xs text-textMuted truncate mt-0.5">
+                        {conv.last_message_preview || 'No messages yet'}
+                      </p>
+                    </div>
+                    <span className="text-xs text-textFaint shrink-0">
+                      {timeAgo(conv.last_message_at || conv.updated_at)}
+                    </span>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
+
+        <div className="space-y-6">
+          <section className="bg-surface border border-border rounded-xl p-5">
+            <h3 className="font-semibold text-textMain mb-4">By channel</h3>
+            {loading ? (
+              <div className="h-20 bg-soft rounded-lg animate-pulse" />
+            ) : Object.keys(byChannel).length === 0 ? (
+              <p className="text-sm text-textMuted">No channel data yet.</p>
+            ) : (
+              <div className="space-y-3">
+                {Object.entries(byChannel).map(([channel, count]) => (
+                  <div key={channel} className="flex items-center justify-between text-sm">
+                    <span className="capitalize text-textMain">{channel}</span>
+                    <span className="font-medium">{formatNumber(count)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="bg-surface border border-border rounded-xl p-5">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="font-semibold text-textMain">Team</h3>
+              <Users size={16} className="text-textMuted" />
+            </div>
+            {agents.length === 0 ? (
+              <p className="text-sm text-textMuted">No agents found.</p>
+            ) : (
+              <ul className="space-y-3">
+                {agents.slice(0, 6).map((agent) => (
+                  <li key={agent.id} className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium text-textMain truncate">{agent.name}</p>
+                      <p className="text-xs text-textMuted capitalize">{agent.role}</p>
+                    </div>
+                    <StatusBadge status={agent.agent_status} />
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
         </div>
       </div>
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  icon: Icon,
+}: {
+  label: string;
+  value: string;
+  icon: typeof Inbox;
+}) {
+  return (
+    <div className="p-5 bg-surface border border-border rounded-xl">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-sm text-textMuted">{label}</p>
+        <Icon size={16} className="text-textFaint" />
+      </div>
+      <p className="text-3xl font-bold text-textMain tracking-tight">{value}</p>
     </div>
   );
 }

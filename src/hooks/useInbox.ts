@@ -1,18 +1,16 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
-import { api } from '@/lib/api';
-import { wsClient } from '@/lib/ws';
-import type {
-  Conversation,
-  ConversationStatus,
-  PaginatedResponse,
-} from '@/lib/types';
-import type { WSEvent } from '@/lib/ws';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { nandi } from '@/lib/nandi';
+import { wsClient, type WSEvent } from '@/lib/ws';
+import { errorMessage } from '@/lib/utils';
+import type { Conversation, ConversationStatus } from '@/lib/types';
 
-interface InboxFilters {
-  status?: ConversationStatus;
-  search?: string;
+export interface InboxFilters {
+  status?: ConversationStatus | string;
+  channel?: string;
+  assignee_id?: string;
+  q?: string;
   page: number;
   per_page: number;
 }
@@ -23,73 +21,106 @@ export function useInbox(initialFilters?: Partial<InboxFilters>) {
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<InboxFilters>({
     page: 1,
-    per_page: 25,
+    per_page: 30,
     ...initialFilters,
   });
   const [total, setTotal] = useState(0);
+  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [searchInput, setSearchInput] = useState(initialFilters?.q || '');
 
   const fetchConversations = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const params = new URLSearchParams();
-      if (filters.status) params.set('status', filters.status);
-      if (filters.search) params.set('search', filters.search);
-      params.set('page', String(filters.page));
-      params.set('per_page', String(filters.per_page));
-
-      const res = await api.get<PaginatedResponse<Conversation>>(
-        `/conversations?${params.toString()}`
-      );
+      const res = await nandi.conversations.list({
+        status: filters.status,
+        channel: filters.channel,
+        assignee_id: filters.assignee_id,
+        q: filters.q,
+        page: filters.page,
+        per_page: filters.per_page,
+      });
       setConversations(res.data);
-      setTotal(res.total);
+      setTotal(res.meta.total);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to fetch conversations');
+      setError(errorMessage(err, 'Failed to fetch conversations'));
     } finally {
       setIsLoading(false);
     }
   }, [filters]);
 
   useEffect(() => {
-    fetchConversations();
+    void fetchConversations();
   }, [fetchConversations]);
 
-  // WebSocket: update list on conversation_updated or new_message
   useEffect(() => {
-    const unsubUpdated = wsClient.on('conversation_updated', (event: WSEvent) => {
-      const updated = event.data as Conversation;
+    const upsert = (incoming: Conversation) => {
       setConversations((prev) => {
-        const idx = prev.findIndex((c) => c.id === updated.id);
-        if (idx === -1) return [updated, ...prev];
-        const copy = [...prev];
-        copy[idx] = updated;
-        return copy;
+        const idx = prev.findIndex((item) => item.id === incoming.id);
+        if (idx === -1) return [incoming, ...prev];
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...incoming };
+        next.sort((a, b) => {
+          const aTime = a.last_message_at || a.created_at;
+          const bTime = b.last_message_at || b.created_at;
+          return new Date(bTime).getTime() - new Date(aTime).getTime();
+        });
+        return next;
       });
+    };
+
+    const unsubCreated = wsClient.on('conversation_created', () => {
+      void fetchConversations();
     });
 
-    const unsubNew = wsClient.on('new_message', (event: WSEvent) => {
-      // Refresh to get the latest preview
-      fetchConversations();
+    const unsubUpdated = wsClient.on('conversation_updated', (event: WSEvent) => {
+      const payload = event.payload as Conversation | undefined;
+      if (payload && payload.id) {
+        upsert(payload);
+        return;
+      }
+      void fetchConversations();
+    });
+
+    const unsubMessage = wsClient.on('new_message', () => {
+      void fetchConversations();
     });
 
     return () => {
+      unsubCreated();
       unsubUpdated();
-      unsubNew();
+      unsubMessage();
     };
   }, [fetchConversations]);
 
-  const refetch = () => fetchConversations();
-
-  const setStatusFilter = (status?: ConversationStatus) => {
+  const setStatusFilter = (status?: ConversationStatus | string) => {
     setFilters((prev) => ({ ...prev, status, page: 1 }));
   };
 
-  const setSearch = (search: string) => {
-    setFilters((prev) => ({ ...prev, search, page: 1 }));
+  const setChannelFilter = (channel?: string) => {
+    setFilters((prev) => ({ ...prev, channel, page: 1 }));
+  };
+
+  const setAssigneeFilter = (assignee_id?: string) => {
+    setFilters((prev) => ({ ...prev, assignee_id, page: 1 }));
+  };
+
+  const setSearch = (value: string) => {
+    setSearchInput(value);
+    if (searchTimer.current) clearTimeout(searchTimer.current);
+    searchTimer.current = setTimeout(() => {
+      setFilters((prev) => ({ ...prev, q: value, page: 1 }));
+    }, 300);
   };
 
   const setPage = (page: number) => {
     setFilters((prev) => ({ ...prev, page }));
+  };
+
+  const patchLocal = (id: string, patch: Partial<Conversation>) => {
+    setConversations((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, ...patch } : item))
+    );
   };
 
   return {
@@ -97,10 +128,14 @@ export function useInbox(initialFilters?: Partial<InboxFilters>) {
     isLoading,
     error,
     filters,
+    searchInput,
     total,
-    refetch,
+    refetch: fetchConversations,
     setStatusFilter,
+    setChannelFilter,
+    setAssigneeFilter,
     setSearch,
     setPage,
+    patchLocal,
   };
 }
