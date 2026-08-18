@@ -1,0 +1,31 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+body {
+  background-color: theme('colors.background');
+  color: theme('colors.textMain');
+}
+
+/* Global focus ring – brand teal */
+*:focus-visible {
+  outline: 2px solid theme('colors.brand');
+  outline-offset: 2px;
+  border-radius: 0.375rem;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: theme('colors.border');
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: theme('colors.textFaint');
+}
